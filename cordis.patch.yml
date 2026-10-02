@@ -1,0 +1,30 @@
+# Feishu mini surface — bundle patch.
+#
+# Mounted by adding "dsh-feishu-mini" to a profile's dsh.profile.bundles.
+# The row id is `feishu-mini`; a profile patch targets that id to fill in the
+# app credentials, operators and workspace. Credentials resolve in this order:
+#   appIdEnv/appSecretEnv (name of an env var) → appId/appSecret (literal).
+#
+# Nothing here is required: with no credentials the row activates and reports
+# "dormant" in one log line instead of failing the tree.
+- insert:
+    - id: feishu-mini
+      name: 'dsh-feishu-mini'
+      config:
+        domain: feishu
+        appId: !!js process.env.FEISHU_HOUSE_APP_ID
+        appSecret: !!js process.env.FEISHU_HOUSE_APP_SECRET
+        # Per-agent state lives in the profile dir (profileContext.dir), so
+        # three profiles on one host never share a binding — unlike the plugin
+        # this replaces, whose state file is $DSH_HOME-global.
+        operators: []
+        requireMention: true
+        steerMidTurn: true
+        beatMs: 4000
+        footer: 'model,context,tokens,timings'
+        reactions:
+          accepted: Typing
+          steered: THINKING
+          done: CheckMark
+          failed: CrossMark
+          stopped: EYES

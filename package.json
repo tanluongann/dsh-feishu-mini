@@ -1,0 +1,25 @@
+{
+  "name": "dsh-feishu-mini",
+  "version": "0.1.0",
+  "private": true,
+  "description": "House Feishu/Lark chat surface for DSH: one-line process card, plain-message answers, reaction state machine, auto-steering.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": { "default": "./lib/index.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/", "cordis.patch.yml", "README.md"],
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "test": "node test/harness.mjs",
+    "link-closure": "node scripts/link-closure.mjs"
+  },
+  "dependencies": {
+    "@larksuite/channel": "^0.7.1"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  }
+}

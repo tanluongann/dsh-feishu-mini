@@ -1,0 +1,7 @@
+node_modules/
+*.log
+
+# per-instance runtime state (bindings) — never commit an agent's chat ids
+feishu-mini-*.json
+
+.DS_Store
