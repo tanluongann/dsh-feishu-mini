@@ -112,13 +112,15 @@ anything else is dispatched to the agent.
   content actually changed. A turn therefore leaves *one* card in the chat, not one per model round-trip.
 * **The answer never rides the card** (by default). It is a `post` message with the `md` tag, which renders
   full CommonMark + GFM — headings, task lists, and **tables**, which cards only render from client 7.4 up.
-* **Cards ship as schema 1.0 by default — measured, not assumed.** On the target client a schema-2.0 card
-  renders as the platform's *"please upgrade your client"* placeholder (whole body, title survives), and
-  `collapsible_panel` degrades to the same placeholder **inside an otherwise fine 1.0 card**. So: v1 by
-  default (`cardVersion: 'v2'` opts back in for clients that support it), and *click to expand* is our own
-  `details` button that patches the card in place — no version-gated component involved. Reproduce with
-  `node scripts/probe-cards.mjs <chat_id>`, which sends labelled probes and prints what the platform echoes
-  back for each.
+* **Cards ship as schema 2.0 by default** (`cardVersion: 'v2'`), because 2.0 is what carries the ⏹ on the
+  **same row** as the status line and `config.summary` — the status line in the **chat list**. It needs a
+  client ≥ 7.20; `cardVersion: 'v1'` is the fallback for anything older, and there *click to expand* becomes
+  our own `details` button instead of the native panel.
+* **Do not judge card rendering from the message API.** `im/v1/messages/:id` returns the platform's
+  *"please upgrade your client"* fallback for schema-2.0 (and `collapsible_panel`) cards **regardless of what
+  the client draws** — I mistook that read-back for client behaviour once and switched the whole surface to
+  1.0 on the strength of it. `scripts/probe-cards.mjs` shows the read-back; only a human looking at the
+  client settles the question.
 * **1.0 forbids `action` inside a `column`** (`ErrCode 200410`), so the stop button lives in a top-level
   `action` row rather than beside the text. It is still one small button, not a button row.
 * **Reactions are a state machine, not decoration.** Feishu has no "replace": the previous emoji is removed

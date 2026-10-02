@@ -78,51 +78,53 @@ const ok = (label) => { checks += 1; console.log(`  ✓ ${label}`) }
   foldEvent(state, { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash', contextWindow: 100_000 } }, t0 + 100)
   foldEvent(state, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Here is the answer.' }] }, usage: { inputTokens: 42_000, outputTokens: 380 } } }, t0 + 500)
   const running = processCard(state, { ...config, footerFields: footerFields(config) }, { sessionId: 's1', cwd: '/tmp' }, t0 + 5_000)
-  assert.equal(running.schema, undefined, 'v1 by default — schema 2.0 renders as an upgrade placeholder')
+  assert.equal(running.schema, '2.0', 'v2 by default — it carries the same-row stop and the chat-list summary')
   assert.equal(running.header, undefined, 'no header bar')
   assert.equal(running.config.update_multi, true, 'update_multi is required to patch a card')
-  assert.match(running.elements[0].text.content, /^🧠 thinking/, 'the one line carries the icon + phase')
-  assert.equal(running.elements[0].tag, 'div', 'v1 renders the line as a div(lark_md)')
-  const actionRow = running.elements.at(-1)
-  assert.equal(actionRow.tag, 'action', 'v1 needs a top-level action row for buttons')
-  const stop = actionRow.actions[0]
+  assert.match(running.config.summary.content, /^🧠 thinking/, 'the chat list shows the status line')
+  assert.equal(running.body.elements[0].tag, 'column_set', 'the line and the stop share one row')
+  const stop = running.body.elements[0].columns[1].elements[0]
   assert.equal(stop.tag, 'button')
-  assert.match(stop.text.content, /⏹/, 'a small stop, not a button row')
-  assert.equal(stop.value.action, STOP_ACTION)
-  const detailButton = actionRow.actions.at(-1)
-  assert.equal(detailButton.value.action, DETAILS_ACTION, 'the details toggle is ours (no collapsible_panel)')
-  assert.ok(!JSON.stringify(running).includes('collapsible_panel'), 'version-gated component stays out of v1')
-  assert.ok(!JSON.stringify(running).includes('"note"'), 'no note element')
+  assert.equal(stop.size, 'tiny', 'the stop must not be huge')
+  assert.equal(stop.behaviors[0].value.action, STOP_ACTION)
+  assert.ok(JSON.stringify(running).includes('collapsible_panel'), 'the native panel carries the detail')
+  assert.ok(!JSON.stringify(running).includes('"note"'), '2.0 rejects note')
 
-  // the v2 build is kept for clients that support it
-  const v2 = processCard(state, { ...config, cardVersion: 'v2', footerFields: [] }, {}, t0 + 5_100)
-  assert.equal(v2.schema, '2.0')
-  assert.equal(v2.body.elements[0].tag, 'column_set', 'v2 keeps the stop on the same line')
-  assert.match(v2.config.summary.content, /^🧠 thinking/, 'v2 can carry the chat-list summary')
-  assert.ok(JSON.stringify(v2).includes('collapsible_panel'), 'v2 uses the native panel')
+  // v1 remains for clients below 7.20: line, action row, our own toggle
+  const v1 = processCard(state, { ...config, cardVersion: 'v1', footerFields: [] }, {}, t0 + 5_100)
+  assert.equal(v1.schema, undefined, 'v1 omits the schema field')
+  assert.equal(v1.elements[0].tag, 'div')
+  const actionRow = v1.elements.at(-1)
+  assert.equal(actionRow.tag, 'action', 'v1 needs a top-level action row for buttons')
+  assert.match(actionRow.actions[0].text.content, /⏹/)
+  assert.equal(actionRow.actions.at(-1).value.action, DETAILS_ACTION, 'v1 uses our own details toggle')
+  assert.ok(!JSON.stringify(v1).includes('collapsible_panel'), 'version-gated component stays out of v1')
 
   // no stop button once the turn is over, and the tick shows up
   foldEvent(state, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }, t0 + 9_000)
   const done = processCard(state, { ...config, footerFields: footerFields(config) }, {}, t0 + 9_500)
-  assert.match(done.elements[0].text.content, /^✅ done/)
+  assert.match(done.config.summary.content, /^✅ done/)
   assert.equal(JSON.stringify(done).includes(STOP_ACTION), false, 'button gone when idle')
 
   // stopButton:false removes it entirely
   const noStop = processCard(state, { ...config, stopButton: false, footerFields: [] }, {}, t0 + 9_600)
   assert.equal(JSON.stringify(noStop).includes(STOP_ACTION), false)
 
-  // details: our own toggle (v1), and the native panel in v2
+  // details: native panel in v2 (default), our own toggle in v1
   const detailState = initialTurn()
+  const v1Config = { ...config, cardVersion: 'v1', footerFields: [] }
   foldEvent(detailState, { type: 'turn/start', data: { turn: 1 } }, t0)
-  const bare = processCard(detailState, { ...config, footerFields: [] }, {}, t0)
-  assert.equal(JSON.stringify(bare).includes(DETAILS_ACTION), false, 'nothing to show yet — no details button')
+  const bare = processCard(detailState, v1Config, {}, t0)
+  assert.equal(JSON.stringify(bare).includes(DETAILS_ACTION), false, 'v1: nothing to show yet — no details button')
   assert.equal(JSON.stringify(bare).includes(STOP_ACTION), true, 'but the stop is there while it runs')
   foldEvent(detailState, { type: 'tool/call', data: { name: 'bash' } }, t0 + 10)
-  const collapsed = processCard(detailState, { ...config, footerFields: [] }, {}, t0 + 20)
-  assert.equal(JSON.stringify(collapsed).includes(DETAILS_ACTION), true, 'the details button appears with activity')
-  const opened = processCard(detailState, { ...config, footerFields: [] }, { detailsOpen: true }, t0 + 30)
-  assert.equal(opened.elements.length, 3, 'toggling details adds the detail div')
+  const collapsed = processCard(detailState, v1Config, {}, t0 + 20)
+  assert.equal(JSON.stringify(collapsed).includes(DETAILS_ACTION), true, 'v1: the details button appears with activity')
+  const opened = processCard(detailState, v1Config, { detailsOpen: true }, t0 + 30)
+  assert.equal(opened.elements.length, 3, 'v1: toggling details adds the detail div')
   assert.match(opened.elements[1].text.content, /🔧 bash/)
+  const panel = processCard(detailState, { ...config, footerFields: [] }, {}, t0 + 40)
+  assert.ok(JSON.stringify(panel).includes('collapsible_panel'), 'v2: the panel appears once there is activity')
 
   // the answer is an ordinary message with a small footer, and no dangling rule
   const body = answerBody('Here is the answer.', state, { ...config, footerFields: footerFields(config) }, { sessionId: 's1' })
@@ -205,7 +207,7 @@ function fakeCtx(agent) {
   const config = Config({
     appId: 'cli_emma', appSecret: 's', cwd: '/home/tiao/.dsh/emma',
     operators: ['ou_jeremy'], provider: 'deepseek-official', model: 'deepseek-flash',
-    beatMs: 60_000, footer: 'model,timings',
+    beatMs: 60_000, footer: 'model,timings', cardVersion: 'v1',
   })
   const channel = fakeChannel()
   const agent = fakeAgent()
@@ -266,7 +268,7 @@ function fakeCtx(agent) {
   assert.equal(channel.calls.reactions.at(-1).emoji, 'CheckMark', 'tick when the turn completes')
   assert.equal(channel.calls.removed.at(-1).emoji, 'THINKING')
   const finalCard = channel.calls.updated.at(-1).card
-  assert.match(finalCard.elements[0].text.content, /^✅ done/, 'the line flips to the tick')
+  assert.match(finalCard.elements[0].text.content, /^✅ done/, 'v1: the line flips to the tick')
   // the details toggle is ours: tapping it patches the card with the detail div
   const beforeToggle = channel.calls.updated.length
   channel.handlers.cardAction({ chatId: 'oc_emma', messageId: 'om_1', action: { value: { action: DETAILS_ACTION } }, operator: { openId: 'ou_jeremy' } })
