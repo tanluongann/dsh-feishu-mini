@@ -112,6 +112,9 @@ anything else is dispatched to the agent.
   content actually changed. A turn therefore leaves *one* card in the chat, not one per model round-trip.
 * **The answer never rides the card** (by default). It is a `post` message with the `md` tag, which renders
   full CommonMark + GFM — headings, task lists, and **tables**, which cards only render from client 7.4 up.
+* **Nothing we add starts with markdown decoration.** The chat-list preview shows the RAW message text, so an
+  italic `_footer_` (or a message that opens with `_…_`) renders as a literal underscore in the list. The
+  footer is plain text with a leading em dash; keep it that way.
 * **Cards ship as schema 2.0 by default** (`cardVersion: 'v2'`), because 2.0 is what carries the ⏹ on the
   **same row** as the status line and `config.summary` — the status line in the **chat list**. It needs a
   client ≥ 7.20; `cardVersion: 'v1'` is the fallback for anything older, and there *click to expand* becomes

@@ -65,7 +65,7 @@ await channel.updateCard(messageId, done)
 
 console.log('sending the answer message…')
 const answer = [
-  '_Display sample from **dsh-feishu-mini** — not a real reply._',
+  'Display sample from **dsh-feishu-mini** — not a real reply.',
   '',
   'The answer is an ordinary chat message, so it renders full markdown:',
   '',
