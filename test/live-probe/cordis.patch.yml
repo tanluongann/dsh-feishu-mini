@@ -4,7 +4,8 @@
       name: 'fm-live-probe'
       config:
         pluginDir: /home/tiao/.dsh/repos/dsh-feishu-mini
-        prompt: 'Reply with exactly: PROBE OK'
+        prompt: 'Work through the request briefly, then reply with exactly: PROBE OK'
+        steerPrompt: 'Also include the word steered somewhere in your final answer.'
         provider: deepseek-official
         model: deepseek-flash
         timeoutMs: 120000

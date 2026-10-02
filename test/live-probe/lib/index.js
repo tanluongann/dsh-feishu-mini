@@ -69,7 +69,25 @@ async function run(ctx, config) {
   await bot.chain(() => Promise.resolve()) // inbound work rides the card chain
   const entry = [...bot.chats.values()][0]
   if (entry === undefined) throw new Error('no chat entry was created for the inbound message')
+  // the scratch session can be reused across runs, so compare turn COUNTERS
+  const turnBeforeRun = entry.turn.turn ?? 0
   const sessionId = entry.sessionId
+
+  // -------- auto-steering against a REAL agent -------------------------------
+  // Wait for the turn to actually be live (its card is opened on turn/start),
+  // then send a second message: it must be STEERED into the running turn, not
+  // queued as a new one — one card, one answer, one turn number.
+  if (config.steerPrompt !== undefined) {
+    const cardDeadline = Date.now() + 15000
+    while (Date.now() < cardDeadline && !sent.some((s) => s.input.card !== undefined)) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    const wasRunning = entry.turn.running === true
+    handlers.message({ messageId: 'om_probe_steer', chatId: 'oc_probe', content: config.steerPrompt, senderIsBot: false })
+    await bot.chain(() => Promise.resolve())
+    record('a message sent mid-turn is steered into the running turn', wasRunning, wasRunning ? 'turn was running' : 'turn had already ended — inconclusive')
+    record('steering shows the THINKING reaction', reactions.includes('THINKING'), reactions.join(' → '))
+  }
 
   const deadline = Date.now() + (config.timeoutMs ?? 120000)
   let answer
@@ -96,6 +114,16 @@ async function run(ctx, config) {
   record('the settled card shows a tick', JSON.stringify(updated.at(-1)?.card ?? {}).includes('✅'),
     JSON.stringify(updated.at(-1)?.card?.elements?.[0]?.text?.content ?? ''))
   record('the answer echoes the model output', body.includes('PROBE OK'), body.split('\n')[0].slice(0, 60))
+  if (config.steerPrompt !== undefined) {
+    // The proof that the steer stayed inside the turn: ONE card (a new turn
+    // would open another on turn/start), ONE answer, and an extra model round.
+    record('a steer stayed inside the same turn', sent.filter((s) => s.input.card !== undefined).length === 1
+      && sent.filter((s) => s.input.markdown !== undefined).length === 1
+      && entry.turn.rounds >= 2,
+      `cards=${sent.filter((s) => s.input.card !== undefined).length} answers=${sent.filter((s) => s.input.markdown !== undefined).length} rounds=${entry.turn.rounds} (previous turn counter ${turnBeforeRun})`)
+    record('a steer did not produce a second answer message', sent.filter((s) => s.input.markdown !== undefined).length === 1,
+      `${sent.filter((s) => s.input.markdown !== undefined).length} answer message(s)`)
+  }
 
   console.log('\nSUMMARY', JSON.stringify({
     sessionId,
@@ -107,6 +135,7 @@ async function run(ctx, config) {
     cardsSent: sent.filter((s) => s.input.card !== undefined).length,
     patches: updated.length,
     messages: sent.filter((s) => s.input.markdown !== undefined).length,
+    turnNumber: entry.turn.turn,
     reactions,
     removed,
     answerFirstLine: body.split('\n')[0]?.slice(0, 80),
