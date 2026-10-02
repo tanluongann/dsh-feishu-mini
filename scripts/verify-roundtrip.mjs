@@ -86,9 +86,18 @@ claim(answers.length >= 1, 'an answer message reached the chat', `${answers.leng
 if (cards.length >= 1) {
   const newest = cards[0]
   const flat = JSON.stringify(newest.body)
-  claim(!flat.includes('请升级'), 'the newest card rendered (no "upgrade your client" placeholder)')
+  const placeholdered = flat.includes('请升级')
   const stateLine = /(🧠|🔧|✍️|✅|⚠️|⏹)[^"]*/u.exec(flat)?.[0] ?? ''
-  claim(/(🧠|🔧|✍️|✅|⚠️|⏹)/u.test(flat), 'the one-line status survived to the client', stateLine.slice(0, 60))
+  const expectV1 = process.argv.includes('--expect-v1')
+  if (placeholdered && !expectV1) {
+    // The message API returns a fallback representation for cards it cannot
+    // serialise (schema 2.0, collapsible panels) regardless of what the client
+    // draws, so this is not evidence by itself. `--expect-v1` makes it fatal.
+    console.log('NOTE  the API returned the upgrade fallback for the newest card — expected for 2.0/panelled cards; ask the human what they SEE')
+  } else {
+    claim(!placeholdered, 'the newest card rendered with real content', stateLine.slice(0, 60))
+  }
+  if (!placeholdered) claim(/(🧠|🔧|✍️|✅|⚠️|⏹)/u.test(flat), 'the one-line status survived to the client', stateLine.slice(0, 60))
   claim(!JSON.parse(flat.replace(/^\{/, '{')).header, 'the card is headerless', 'no title bar')
 }
 if (answers.length >= 1) {

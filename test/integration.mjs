@@ -200,6 +200,26 @@ const workdir = mkdtempSync(join(tmpdir(), 'fm-integration-'))
   ok('invalid config: rejected (beatMs must be a natural)')
 }
 
+// ------------------------------------ the namespace follows the resolved app --
+{
+  const ctx = new Context()
+  const { service } = fakeAgents()
+  ctx.provide('agents', service)
+  ctx.provide('profileContext', { dir: workdir, cwd: workdir })
+  process.env.FM_TEST_APP_ID = 'cli_envapp123456'
+  const channel = fakeChannel()
+  const fork = ctx.plugin(wrapperFor(channel), { appIdEnv: 'FM_TEST_APP_ID', appSecret: 's' })
+  await fork
+  // first contact writes the state file, which is where the namespace shows
+  channel.state.handlers.message({ messageId: 'om_ns', chatId: 'oc_ns', content: 'hi', senderIsBot: false })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  const files = (await import('node:fs')).readdirSync(workdir).filter((f) => f.startsWith('feishu-mini-'))
+  assert.ok(files.some((f) => f.includes('app-123456')), `instance namespace must come from the resolved app id, saw ${files.join(', ')}`)
+  await fork.dispose()
+  delete process.env.FM_TEST_APP_ID
+  ok('credentials by env name still namespace the instance by the resolved app id')
+}
+
 rmSync(workdir, { recursive: true, force: true })
 console.log(`\nALL INTEGRATION CHECKS PASSED (${checks} groups)`)
 assert.ok(footerFields({ footer: 'off' }).length === 0)
