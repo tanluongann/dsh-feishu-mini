@@ -137,6 +137,14 @@ npm install
 node scripts/link-closure.mjs     # point @deepseek-ai at the installed dsh closure
 node test/harness.mjs             # 5 groups: config, turn fold, render, state, bot lifecycle
 node test/integration.mjs         # 8 groups through the real cordis registry (fiber, effects, dispose)
+
+# 3) LIVE probe — a REAL agent, a REAL model turn, only Feishu faked
+mkdir -p /tmp/dsh-fmprobe/profiles/probe && cd /tmp/dsh-fmprobe/profiles/probe
+#   package.json:  bundles ["@deepseek-ai/dsh-base", "fm-live-probe"], dep
+#                  "fm-live-probe": "link:<repo>/test/live-probe"
+DSH_HOME=/tmp/dsh-fmprobe dsh plugin --profile probe install
+DSH_HOME=/tmp/dsh-fmprobe dsh --profile probe
+# prints PASS/FAIL per claim + a JSON summary, then exits
 ```
 
 The harness drives the real render/turn/bot code with a fake channel and a fake agent — card geometry,

@@ -1,0 +1,10 @@
+# Live probe bundle: mounts one row, which drives the surface and exits.
+- insert:
+    - id: fm-live-probe
+      name: 'fm-live-probe'
+      config:
+        pluginDir: /home/tiao/.dsh/repos/dsh-feishu-mini
+        prompt: 'Reply with exactly: PROBE OK'
+        provider: deepseek-official
+        model: deepseek-flash
+        timeoutMs: 120000
