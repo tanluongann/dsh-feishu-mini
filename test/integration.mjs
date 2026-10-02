@@ -98,9 +98,9 @@ const workdir = mkdtempSync(join(tmpdir(), 'fm-integration-'))
   await settle()
   assert.equal(channel.state.sent.length, 1, 'one card opened for the turn')
   const card = channel.state.sent[0].input.card
-  assert.equal(card.schema, '2.0')
+  assert.equal(card.schema, undefined, 'v1 card by default (the client rejects 2.0 bodies)')
   assert.equal(card.header, undefined, 'headerless')
-  assert.match(card.config.summary.content, /^🧠 thinking/)
+  assert.match(card.elements[0].text.content, /^🧠 thinking/)
 
   ctx.emit('session/event', { id: boundId }, { type: 'tool/call', data: { turn: 1, step: 1, name: 'bash' } })
   ctx.emit('session/event', { id: boundId }, { type: 'tool/result', data: { turn: 1, step: 1 } })
@@ -111,7 +111,7 @@ const workdir = mkdtempSync(join(tmpdir(), 'fm-integration-'))
   ctx.emit('agent/assistant-stream', { agent: { id: boundId }, frame: { type: 'start', attemptId: 'a1', revision: 1, turn: 1, step: 1 } })
   ctx.emit('agent/assistant-stream', { agent: { id: boundId }, frame: { type: 'chunk', attemptId: 'a1', revision: 1, index: 0, time: 0, chunk: { type: 'reasoning-delta', index: 0, text: 'thinking about it' } } })
   await settle()
-  assert.match(channel.state.updated.at(-1).card.config.summary.content, /🔧|🧠/, 'stream deltas reach the live card')
+  assert.match(channel.state.updated.at(-1).card.elements[0].text.content, /🔧|🧠/, 'stream deltas reach the live card')
 
   ctx.emit('session/event', { id: boundId }, { type: 'request/context', data: { provider: 'deepseek-official', model: 'deepseek-flash', contextWindow: 100000 } })
   ctx.emit('session/event', { id: boundId }, {
@@ -127,8 +127,22 @@ const workdir = mkdtempSync(join(tmpdir(), 'fm-integration-'))
   assert.match(answer.markdown, /deepseek-flash/, 'footer carries the model from the live agent')
   assert.equal(answer.markdown.includes('---'), false, 'no separator line')
   assert.equal(channel.state.reactions.at(-1).emoji, 'CheckMark', 'tick once the turn completes')
-  assert.match(channel.state.updated.at(-1).card.config.summary.content, /^✅ done/, 'chat list flips to the tick')
+  assert.match(channel.state.updated.at(-1).card.elements[0].text.content, /^✅ done/, 'the line flips to the tick')
   ok('turn lifecycle: one card, patched in place → message answer + footer → tick')
+
+  // --------------------------------------------------- the details toggle --
+  {
+    const before = channel.state.updated.length
+    const response = channel.state.handlers.cardAction({ chatId: 'oc_test', messageId: 'om_1', action: { value: { action: 'feishu-mini/details' } }, operator: { openId: 'ou_x' } })
+    await settle()
+    assert.ok(channel.state.updated.length > before, 'the details toggle patches the card')
+    assert.match(JSON.stringify(channel.state.updated.at(-1).card), /🔧/, 'detail rows now render')
+    assert.equal(response.toast.type, 'info')
+    // and back again
+    channel.state.handlers.cardAction({ chatId: 'oc_test', messageId: 'om_1', action: { value: { action: 'feishu-mini/details' } }, operator: { openId: 'ou_x' } })
+    await settle()
+    ok('details toggle: click to expand, click to hide — no version-gated panel')
+  }
 
   // ------------------------------------------------------- the beat timer --
   const before = channel.state.updated.length

@@ -13,8 +13,10 @@ Jeremy's requirements, in his words, are the spec:
 
 * **No large or colourful title bar** — cards are sent **headerless**, and the answer is an ordinary chat
   message, not a card.
-* **Thinking is one line**: `🧠 thinking · 12s · 🔧 3`, one icon, click the collapsed panel for the detail.
-* **A small ⏹ on the right of that same line** — a `tiny` text button, never a button row.
+* **Thinking is one line**: `🧠 thinking · 12s · 🔧 3`, one icon, and a `details` button that opens the
+  detail in place (the native `collapsible_panel` is version-gated on the target client).
+* **A small ⏹ while a turn runs** — one button in a top-level action row (v1 cannot put a button in a
+  column), never a row of buttons.
 * **The icon is visible from the chat list** — the card's `summary` carries the same line, so the list
   shows `🧠 thinking …` and flips to `✅ done` (and `⚠️` / `⏹`) when the turn settles.
 * **The answer is rich but button-free**, ending in one dim footer line: model · context · tokens · time
@@ -110,9 +112,15 @@ anything else is dispatched to the agent.
   content actually changed. A turn therefore leaves *one* card in the chat, not one per model round-trip.
 * **The answer never rides the card** (by default). It is a `post` message with the `md` tag, which renders
   full CommonMark + GFM — headings, task lists, and **tables**, which cards only render from client 7.4 up.
-* **Schema 2.0, but never `tag: note` / `tag: action`** — 2.0 rejects both (`200861`), which is why
-  interactive cards elsewhere still use the 1.0 layout. This surface keeps interactive elements out of the
-  process card, so it can stay 2.0.
+* **Cards ship as schema 1.0 by default — measured, not assumed.** On the target client a schema-2.0 card
+  renders as the platform's *"please upgrade your client"* placeholder (whole body, title survives), and
+  `collapsible_panel` degrades to the same placeholder **inside an otherwise fine 1.0 card**. So: v1 by
+  default (`cardVersion: 'v2'` opts back in for clients that support it), and *click to expand* is our own
+  `details` button that patches the card in place — no version-gated component involved. Reproduce with
+  `node scripts/probe-cards.mjs <chat_id>`, which sends labelled probes and prints what the platform echoes
+  back for each.
+* **1.0 forbids `action` inside a `column`** (`ErrCode 200410`), so the stop button lives in a top-level
+  `action` row rather than beside the text. It is still one small button, not a button row.
 * **Reactions are a state machine, not decoration.** Feishu has no "replace": the previous emoji is removed
   before the next is added, and a failed reaction never blocks a turn.
 * **State is per instance**, stored in the *profile* directory. Two agents on one host must never share a
@@ -127,7 +135,8 @@ anything else is dispatched to the agent.
 ```bash
 npm install
 node scripts/link-closure.mjs     # point @deepseek-ai at the installed dsh closure
-node test/harness.mjs             # 5 check groups, no network, no Feishu app
+node test/harness.mjs             # 5 groups: config, turn fold, render, state, bot lifecycle
+node test/integration.mjs         # 8 groups through the real cordis registry (fiber, effects, dispose)
 ```
 
 The harness drives the real render/turn/bot code with a fake channel and a fake agent — card geometry,
