@@ -318,6 +318,7 @@ function fakeCtx(agent) {
 {
   // A 1x1 PNG, valid bytes the attachment store would admit.
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  let sniffProbe = undefined // when set, contentType is garbage to exercise the sniff
   const fakeAttachments = {
     saved: { images: [], files: [] },
     async saveImage(input) { this.saved.images.push(input); return { attachmentId: `att-img-${this.saved.images.length}`, mediaType: input.mediaType, bytes: input.data.byteLength, width: 1, height: 1, name: input.name } },
@@ -329,7 +330,7 @@ function fakeCtx(agent) {
   const baseGet = ctx.get.bind(ctx)
   ctx.get = (name) => (name === 'attachments' ? fakeAttachments : baseGet(name))
   let media = { data: png, mediaType: 'image/png' }
-  channel.downloadResourceWithMeta = async () => media
+  channel.downloadResourceWithMeta = async () => ({ buffer: media.data ?? media.buffer, contentType: media.contentType })
   const config = Config({ appId: 'cli_img', appSecret: 's', cwd: '/home/tiao/.dsh/emma', operators: ['ou_jeremy'], provider: 'deepseek-official', model: 'deepseek-flash', beatMs: 60_000, footer: 'off' })
   const dir = mkdtempSync(join(tmpdir(), 'fm-img-'))
   const store = new StateStore(dir, 'app-img')
@@ -382,8 +383,16 @@ function fakeCtx(agent) {
   assert.equal(blocks.length, 2, 'caption + the failure note reach the model')
   assert.match(blocks[1].text, /could not be fetched/)
 
+  // 5b. a lying content-type (octet-stream) is rescued by magic-byte sniffing
+  channel.downloadResourceWithMeta = async () => ({ buffer: png, contentType: 'application/octet-stream' })
+  channel.handlers.message({ messageId: 'om_img5b', chatId: 'oc_img', content: 'sniff me', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_5b' }] })
+  await settle()
+  const sniffed = (agent.seen.steer.at(-1)?.content ?? agent.seen.followup.at(-1)?.content)[1]
+  assert.equal(sniffed.type, 'image', 'sniffed image still stored natively')
+  assert.equal(sniffed.attachment.mediaType, 'image/png')
+
   // 6. non-image resources become file blocks when files are on
-  channel.downloadResourceWithMeta = async () => ({ data: Buffer.from('%PDF-fake'), mediaType: 'application/pdf' })
+  channel.downloadResourceWithMeta = async () => ({ buffer: Buffer.from('%PDF-fake'), contentType: 'application/pdf' })
   channel.handlers.message({ messageId: 'im_u6', chatId: 'oc_img', content: 'the doc', senderIsBot: false, resources: [{ type: 'file', fileKey: 'doc_1', fileName: 'spec.pdf' }] })
   await settle()
   blocks = lastBlocks()
