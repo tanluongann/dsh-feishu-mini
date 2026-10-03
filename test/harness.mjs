@@ -314,4 +314,91 @@ function fakeCtx(agent) {
   ok('bot: dispatch, steer, one card per turn, message answer, reactions, stop button, commands, no loops')
 }
 
+// ---------------------------------------------------- inbound image handling --
+{
+  // A 1x1 PNG, valid bytes the attachment store would admit.
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  const fakeAttachments = {
+    saved: { images: [], files: [] },
+    async saveImage(input) { this.saved.images.push(input); return { attachmentId: `att-img-${this.saved.images.length}`, mediaType: input.mediaType, bytes: input.data.byteLength, width: 1, height: 1, name: input.name } },
+    async saveFile(input) { this.saved.files.push(input); return { attachmentId: `att-file-${this.saved.files.length}`, name: input.name, bytes: input.data.byteLength } },
+  }
+  const channel = fakeChannel()
+  const agent = fakeAgent()
+  const ctx = fakeCtx(agent)
+  const baseGet = ctx.get.bind(ctx)
+  ctx.get = (name) => (name === 'attachments' ? fakeAttachments : baseGet(name))
+  let media = { data: png, mediaType: 'image/png' }
+  channel.downloadResourceWithMeta = async () => media
+  const config = Config({ appId: 'cli_img', appSecret: 's', cwd: '/home/tiao/.dsh/emma', operators: ['ou_jeremy'], provider: 'deepseek-official', model: 'deepseek-flash', beatMs: 60_000, footer: 'off' })
+  const dir = mkdtempSync(join(tmpdir(), 'fm-img-'))
+  const store = new StateStore(dir, 'app-img')
+  store.load()
+  const bot = new HouseBot({ ctx, config: { ...config, footerFields: footerFields(config) }, channel, store, logger: ctx.logger, info: { instance: 'app-img', cwd: '/home/tiao/.dsh/emma' } })
+  await bot.start()
+  const settle = () => bot.chain(() => Promise.resolve())
+  /** Whatever reached the agent last (followup when idle, steer mid-turn). */
+  const lastBlocks = () => agent.seen.steer.at(-1)?.content ?? agent.seen.followup.at(-1)?.content
+
+  // 1. native (default): an image with caption -> text + durable image block
+  channel.handlers.message({ messageId: 'im_u1', chatId: 'oc_img', content: 'what is this', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_1' }] })
+  await settle()
+  let blocks = lastBlocks()
+  assert.equal(blocks.length, 2, 'caption + image ride together')
+  assert.equal(blocks[0].text, 'what is this')
+  assert.equal(blocks[1].type, 'image')
+  assert.equal(blocks[1].attachment.mediaType, 'image/png', 'stored as a durable image attachment')
+  assert.equal(fakeAttachments.saved.images.length, 1, 'bytes went through the attachment store')
+
+  // 2. an image with no caption still dispatches
+  channel.handlers.message({ messageId: 'im_u2', chatId: 'oc_img', content: '', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_2' }] })
+  await settle()
+  assert.equal(lastBlocks()[0].type, 'image', 'captionless image is not dropped')
+
+  // 3. file mode: the same image becomes a verbatim file block (tool processing)
+  bot.config.images = 'file'
+  channel.handlers.message({ messageId: 'im_u3', chatId: 'oc_img', content: 'look', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_3', fileName: 'shot.png' }] })
+  await settle()
+  blocks = lastBlocks()
+  assert.equal(blocks[1].type, 'file', 'file mode carries a file block')
+  assert.equal(blocks[1].attachment.name, 'shot.png')
+  assert.equal(fakeAttachments.saved.files.length, 1, 'stored verbatim, no image admission')
+
+  // 4. off mode: images are dropped, the caption still dispatches
+  bot.config.images = 'off'
+  channel.handlers.message({ messageId: 'im_u4', chatId: 'oc_img', content: 'text only', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_4' }] })
+  await settle()
+  blocks = lastBlocks()
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].text, 'text only')
+  bot.config.images = 'native'
+
+  // 5. a broken download degrades to an inline note instead of eating the turn
+  media = { get data() { throw new Error('feishu 500') }, mediaType: 'image/png' }
+  channel.downloadResourceWithMeta = async () => { throw new Error('feishu 500') }
+  channel.handlers.message({ messageId: 'im_u5', chatId: 'oc_img', content: 'again', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_5' }] })
+  await settle()
+  blocks = lastBlocks()
+  assert.equal(blocks.length, 2, 'caption + the failure note reach the model')
+  assert.match(blocks[1].text, /could not be fetched/)
+
+  // 6. non-image resources become file blocks when files are on
+  channel.downloadResourceWithMeta = async () => ({ data: Buffer.from('%PDF-fake'), mediaType: 'application/pdf' })
+  channel.handlers.message({ messageId: 'im_u6', chatId: 'oc_img', content: 'the doc', senderIsBot: false, resources: [{ type: 'file', fileKey: 'doc_1', fileName: 'spec.pdf' }] })
+  await settle()
+  blocks = lastBlocks()
+  assert.equal(blocks[1].type, 'file')
+  assert.equal(blocks[1].attachment.name, 'spec.pdf')
+
+  // 7. no attachment store in the composition: bytes land in the workspace
+  ctx.get = (name) => (name === 'attachments' ? undefined : baseGet(name))
+  channel.handlers.message({ messageId: 'im_u7', chatId: 'oc_img', content: 'fallback', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_7' }] })
+  await settle()
+  blocks = lastBlocks()
+  assert.match(blocks[1].text, /saved to .*feishu-media/, 'workspace path is named so tools can reach it')
+
+  rmSync(dir, { recursive: true, force: true })
+  ok('bot images: native attachment blocks, file mode, off, broken-download fallback, files, workspace fallback')
+}
+
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)

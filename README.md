@@ -101,6 +101,9 @@ profile patch that targets the row replaces that config wholesale.
 | `bodySegmentChars` | `3500` | segment size for long answers |
 | `footer` | `model,context,tokens,timings` | comma list, or `off`. Fields: `model provider effort context tokens cache timings tools session` |
 | `reactions` | `Typing / THINKING / CheckMark / CrossMark / EYES` | Feishu emoji_type names for accepted / steered / done / failed / stopped |
+| `images` | `native` | `native` = image → durable image attachment block: vision-capable routes see pixels natively, text-only routes get the standard placeholder naming the stored path; `file` = image stored verbatim as a file block, the model only sees handle text and deliberately opens it with a tool; `off` = drop images |
+| `files` | `true` | other inbound resources (docs, audio, video) become verbatim file blocks |
+| `maxResourceBytes` | `31457280` | refuse to download anything larger, per resource |
 | `instance` | appId tail | namespace for the state file and derived session ids |
 
 Commands in chat: `/status` (state + route + counters), `/new`, `/stop`, `/display` (the effective flags),
@@ -140,7 +143,7 @@ anything else is dispatched to the agent.
 ```bash
 npm install
 node scripts/link-closure.mjs     # point @deepseek-ai at the installed dsh closure
-node test/harness.mjs             # 5 groups: config, turn fold, render, state, bot lifecycle
+node test/harness.mjs             # 6 groups: config, turn fold, render, state, bot lifecycle, inbound images
 node test/integration.mjs         # 8 groups through the real cordis registry (fiber, effects, dispose)
 
 # 3) LIVE probe — a REAL agent, a REAL model turn, only Feishu faked
