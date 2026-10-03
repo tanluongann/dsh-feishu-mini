@@ -24,7 +24,7 @@ function findClosure() {
     const bin = execFileSync('which', ['dsh'], { encoding: 'utf8' }).trim()
     if (bin !== '') candidates.push(join(dirname(bin), '..', 'node_modules', '@deepseek-ai'))
   } catch { /* no dsh on PATH */ }
-  candidates.push('/home/tiao/.dsh/installation/node_modules/@deepseek-ai')
+  candidates.push('/home/you/.dsh/installation/node_modules/@deepseek-ai')
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
   }

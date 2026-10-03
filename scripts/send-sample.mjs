@@ -47,7 +47,7 @@ foldEvent(state, { type: 'assistant/message', data: {
   usage: { inputTokens: 24000, outputTokens: 180 },
 } }, now + 4000)
 
-const info = { sessionId: 'fm-app-75ba5b-demo', cwd: '/home/tiao/.dsh/emma' }
+const info = { sessionId: 'fm-app-75ba5b-demo', cwd: '/home/you/.dsh/<agent>' }
 const channel = createLarkChannel({ appId, appSecret, domain: 0, transport: 'websocket' })
 
 console.log('sending the live card…')

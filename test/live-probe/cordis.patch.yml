@@ -3,7 +3,7 @@
     - id: fm-live-probe
       name: 'fm-live-probe'
       config:
-        pluginDir: /home/tiao/.dsh/repos/dsh-feishu-mini
+        pluginDir: /home/you/.dsh/repos/dsh-feishu-mini
         prompt: 'Work through the request briefly, then reply with exactly: PROBE OK'
         steerPrompt: 'Also include the word steered somewhere in your final answer.'
         provider: deepseek-official

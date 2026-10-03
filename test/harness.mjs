@@ -24,8 +24,8 @@ const ok = (label) => { checks += 1; console.log(`  ✓ ${label}`) }
   assert.equal(config.reactions.done, 'CheckMark')
   assert.deepEqual(footerFields(config), ['model', 'context'])
   assert.deepEqual(footerFields({ footer: 'off' }), [])
-  assert.equal(instanceOf({ appId: 'cli_aaf3f65075ba5bef' }), 'app-75ba5b'.slice(0, 9) === 'app-75ba' ? instanceOf({ appId: 'cli_aaf3f65075ba5bef' }) : instanceOf({ appId: 'cli_aaf3f65075ba5bef' }))
-  assert.match(instanceOf({ appId: 'cli_aaf3f65075ba5bef' }), /^app-/)
+  assert.match(instanceOf({ appId: 'cli_example0001app' }), /^app-/)
+  assert.match(instanceOf({ appId: 'cli_example0001app' }), /^app-/)
   assert.deepEqual(
     resolveCredentials({ appId: 'literal', appIdEnv: 'TEST_FH_APP', appSecret: 'literal-secret' }, { TEST_FH_APP: 'from-env' }),
     { appId: 'from-env', appSecret: 'literal-secret' },
@@ -209,7 +209,7 @@ function fakeCtx(agent) {
 
 {
   const config = Config({
-    appId: 'cli_emma', appSecret: 's', cwd: '/home/tiao/.dsh/emma',
+    appId: 'cli_example0001app', appSecret: 's', cwd: '/home/you/.dsh/<agent>',
     operators: ['ou_jeremy'], provider: 'deepseek-official', model: 'deepseek-flash',
     beatMs: 60_000, footer: 'model,timings', cardVersion: 'v1',
   })
@@ -219,7 +219,7 @@ function fakeCtx(agent) {
   const dir = mkdtempSync(join(tmpdir(), 'fm-bot-'))
   const store = new StateStore(dir, 'app-emma')
   store.load()
-  const bot = new HouseBot({ ctx, config: { ...config, footerFields: footerFields(config) }, channel, store, logger: ctx.logger, info: { instance: 'app-emma', cwd: '/home/tiao/.dsh/emma' } })
+  const bot = new HouseBot({ ctx, config: { ...config, footerFields: footerFields(config) }, channel, store, logger: ctx.logger, info: { instance: 'app-emma', cwd: '/home/you/.dsh/<agent>' } })
   await bot.start()
   assert.equal(channel.calls.connected, 1)
   // The entry point (lib/index.js) wires these two host subscriptions; the
@@ -331,11 +331,12 @@ function fakeCtx(agent) {
   ctx.get = (name) => (name === 'attachments' ? fakeAttachments : baseGet(name))
   let media = { data: png, mediaType: 'image/png' }
   channel.downloadResourceWithMeta = async () => ({ buffer: media.data ?? media.buffer, contentType: media.contentType })
-  const config = Config({ appId: 'cli_img', appSecret: 's', cwd: '/home/tiao/.dsh/emma', operators: ['ou_jeremy'], provider: 'deepseek-official', model: 'deepseek-flash', beatMs: 60_000, footer: 'off' })
+  const config = Config({ appId: 'cli_img', appSecret: 's', cwd: '/home/you/.dsh/<agent>', operators: ['ou_jeremy'], provider: 'deepseek-official', model: 'deepseek-flash', beatMs: 60_000, footer: 'off' })
   const dir = mkdtempSync(join(tmpdir(), 'fm-img-'))
   const store = new StateStore(dir, 'app-img')
   store.load()
-  const bot = new HouseBot({ ctx, config: { ...config, footerFields: footerFields(config) }, channel, store, logger: ctx.logger, info: { instance: 'app-img', cwd: '/home/tiao/.dsh/emma' } })
+  const workdir = mkdtempSync(join(tmpdir(), 'fm-img-work-'))
+  const bot = new HouseBot({ ctx, config: { ...config, footerFields: footerFields(config) }, channel, store, logger: ctx.logger, info: { instance: 'app-img', cwd: workdir } })
   await bot.start()
   const settle = () => bot.chain(() => Promise.resolve())
   /** Whatever reached the agent last (followup when idle, steer mid-turn). */
@@ -407,6 +408,7 @@ function fakeCtx(agent) {
   assert.match(blocks[1].text, /saved to .*feishu-media/, 'workspace path is named so tools can reach it')
 
   rmSync(dir, { recursive: true, force: true })
+  rmSync(workdir, { recursive: true, force: true })
   ok('bot images: native attachment blocks, file mode, off, broken-download fallback, files, workspace fallback')
 }
 
