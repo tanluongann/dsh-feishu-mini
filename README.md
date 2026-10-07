@@ -101,7 +101,7 @@ profile patch that targets the row replaces that config wholesale.
 | `bodySegmentChars` | `3500` | segment size for long answers |
 | `footer` | `model,context,tokens,timings` | comma list, or `off`. Fields: `model provider effort context tokens cache timings tools session` |
 | `reactions` | `Typing / THINKING / CheckMark / CrossMark / EYES` | Feishu emoji_type names for accepted / steered / done / failed / stopped |
-| `images` | `native` | `native` = image → durable image attachment block: vision-capable routes see pixels natively, text-only routes get the standard placeholder naming the stored path; `file` = image stored verbatim as a file block, the model only sees handle text and deliberately opens it with a tool; `off` = drop images |
+| `images` | `native` | `native` = image → durable image attachment block: vision-capable routes see pixels natively, text-only routes get the standard placeholder naming the stored path; `file` = image stored verbatim as a file block, the model only sees handle text and deliberately opens it with a tool; `off` = drop images. Stickers count as images |
 | `files` | `true` | other inbound resources (docs, audio, video) become verbatim file blocks |
 | `maxResourceBytes` | `31457280` | refuse to download anything larger, per resource |
 | `instance` | appId tail | namespace for the state file and derived session ids |
@@ -131,6 +131,16 @@ anything else is dispatched to the agent.
   `action` row rather than beside the text. It is still one small button, not a button row.
 * **Reactions are a state machine, not decoration.** Feishu has no "replace": the previous emoji is removed
   before the next is added, and a failed reaction never blocks a turn.
+* **Inbound batching is off, and a resource download verifies its owner.** `@larksuite/channel`'s inbound
+  pipeline merges messages that land inside a debounce window into one `NormalizedMessage`; the merge keeps
+  only the **last** message's id while pooling **every** message's resources (and, in a group, the last
+  sender's name for everyone's words). Feishu answers `234003 File not in msg` for each resource that came
+  from an earlier message of the burst — on 2026-10-07 that silently ate 4 of nelly's 5 dinner photos sent
+  in one go. So: the channel options disable the window **in the shape the SDK reads**
+  (`safety.batch.text.delayMs: 0` — the older flat `safety.batch.delayMs` is ignored, which is how the
+  window came back), and `bot.downloadResource` still recovers the owning message id from the chat
+  (`im/v1/messages` around the delivered message's `createTime`, one listing per burst, cached) whenever a
+  download fails. That second path also covers forwarded cards, which inline their sub-messages' keys.
 * **State is per instance**, stored in the *profile* directory. Two agents on one host must never share a
   binding slot — the plugin this replaces keeps its state in `$DSH_HOME` and does exactly that.
 * **`@deepseek-ai/*` stays undeclared** and is symlinked from the running dsh closure by

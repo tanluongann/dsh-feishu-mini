@@ -10,6 +10,7 @@ import { Config, footerFields, instanceOf, resolveCredentials } from '../lib/con
 import { answerBody, DETAILS_ACTION, emptyAnswer, processCard, statusCard, STOP_ACTION } from '../lib/render.js'
 import { foldEvent, foldStream, formatDuration, initialTurn, statusLine } from '../lib/turn.js'
 import { HouseBot } from '../lib/bot.js'
+import { channelOptions } from '../lib/lark.js'
 import { StateStore } from '../lib/state.js'
 
 let checks = 0
@@ -407,9 +408,72 @@ function fakeCtx(agent) {
   blocks = lastBlocks()
   assert.match(blocks[1].text, /saved to .*feishu-media/, 'workspace path is named so tools can reach it')
 
+  // 8. inbound batching is off in the SHAPE the SDK reads (`batch.text`) — the
+  //    retired flat `batch: { delayMs }` was ignored, which is what let a burst
+  //    of images arrive as one message carrying every resource under the last
+  //    message's id (Feishu then 400s all but one with `234003 File not in msg`).
+  ctx.get = (name) => (name === 'attachments' ? fakeAttachments : baseGet(name))
+  const options = channelOptions({ config: Config({ appId: 'cli_img', appSecret: 's' }), credentials: { appId: 'cli_img', appSecret: 's' } })
+  assert.equal(options.safety.batch.text.delayMs, 0, 'batch window off in the SDK’s own shape')
+  assert.equal(options.safety.batch.delayMs, undefined, 'the ignored flat shape is gone')
+
+  // 9. a merged batch (what the SDK produced before that fix): every resource
+  //    but the last is fetched against the wrong message id, so the owner is
+  //    recovered from the chat — one listing for the whole burst.
+  const owners = { img_b1: 'om_b1', img_b2: 'om_b2' }
+  let listings = 0
+  let lastListingParams = undefined
+  channel.rawClient = { im: { v1: { message: { list: async ({ params }) => {
+    listings += 1
+    lastListingParams = params
+    return { code: 0, data: { items: [
+      { message_id: 'om_b1', body: { content: JSON.stringify({ image_key: 'img_b1' }) } },
+      { message_id: 'om_b2', body: { content: JSON.stringify({ image_key: 'img_b2' }) } },
+    ] } }
+  } } } } }
+  channel.downloadResourceWithMeta = async (messageId, fileKey) => {
+    if (owners[fileKey] !== messageId) throw new Error('Request failed with status code 400')
+    return { buffer: png, contentType: 'image/png' }
+  }
+  channel.handlers.message({
+    messageId: 'om_b2', chatId: 'oc_img', createTime: 1_791_367_836_499, senderIsBot: false,
+    content: '![image](img_b1)\n\n![image](img_b2)',
+    resources: [{ type: 'image', fileKey: 'img_b1' }, { type: 'image', fileKey: 'img_b2' }],
+  })
+  await settle()
+  blocks = lastBlocks()
+  assert.equal(blocks.length, 2, 'both images of the batch reach the model (no text block left)')
+  assert.equal(blocks[0].type, 'image', 'the earlier message’s image is recovered')
+  assert.equal(blocks[1].type, 'image', 'the delivered message’s own image needs no recovery')
+  assert.equal(listings, 1, 'one chat listing covers the whole burst')
+  assert.equal(lastListingParams.container_id_type, 'chat')
+  assert.equal(lastListingParams.container_id, 'oc_img')
+
+  // 9b. an unfetchable key is trusted as a miss for the rest of the burst —
+  //     no listing per resource, and the turn still gets an explicit note.
+  listings = 0
+  channel.rawClient.im.v1.message.list = async () => { listings += 1; return { code: 0, data: { items: [] } } }
+  channel.handlers.message({
+    messageId: 'om_b3', chatId: 'oc_other', createTime: 1_791_367_900_000, senderIsBot: false,
+    content: '![image](img_lost)\n\n![image](img_lost2)',
+    resources: [{ type: 'image', fileKey: 'img_lost' }, { type: 'image', fileKey: 'img_lost2' }],
+  })
+  await settle()
+  blocks = lastBlocks()
+  assert.equal(blocks.filter((b) => b.type === 'text' && /could not be fetched/.test(b.text)).length, 2, 'both losses are reported')
+  assert.equal(blocks.some((b) => /!\[[^\]]*\]\(img_/.test(b.text ?? '')), false, 'the unresolvable markdown link is not left as prose')
+  assert.equal(listings, 1, 'the second miss in the same burst does not re-list')
+
+  // 9c. no raw client in the composition: the old single-shot path is kept.
+  delete channel.rawClient
+  channel.downloadResourceWithMeta = async () => { throw new Error('feishu 400') }
+  channel.handlers.message({ messageId: 'om_b4', chatId: 'oc_img', content: 'plain', senderIsBot: false, resources: [{ type: 'image', fileKey: 'img_x' }] })
+  await settle()
+  assert.match(lastBlocks().at(-1).text, /could not be fetched/, 'degrades to a note without a raw client')
+
   rmSync(dir, { recursive: true, force: true })
   rmSync(workdir, { recursive: true, force: true })
-  ok('bot images: native attachment blocks, file mode, off, broken-download fallback, files, workspace fallback')
+  ok('bot images: native attachment blocks, file mode, off, broken-download fallback, files, workspace fallback, batched-resource recovery')
 }
 
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
