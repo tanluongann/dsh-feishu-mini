@@ -897,4 +897,50 @@ async function turnWithoutCard(configOverrides) {
   ok('identity: a refused bot-info call is retried with a placeholder (1:1), and never hidden')
 }
 
+// --------------------------------------------------- raw inbound bridge --
+// When the channel's pipeline drops every message silently, the raw layer can still
+// carry it. The bridge must be conservative: users only, allowlisted senders only,
+// dedup, text only — and it must say what it did.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'fm-bridge-'))
+  const config = Config({
+    appId: 'cli_bridge1app', appSecret: 's', cwd: dir, footer: 'model', cardVersion: 'v1',
+    rawMessageDelivery: true,
+    operators: ['ou_mathieu'],
+  })
+  const channel = fakeChannel()
+  const rawHandlers = {}
+  channel.onRawEvent = (type, handler) => { rawHandlers[type] = handler; return () => {} }
+  const ctx = fakeCtx(fakeAgent())
+  const store = new StateStore(dir, 'app-bridge')
+  store.load()
+  const bot = new HouseBot({
+    ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
+    logger: ctx.logger, info: { instance: 'app-bridge', cwd: dir },
+  })
+  await bot.start()
+  const deliver = (over) => rawHandlers['im.message.receive_v1']({
+    message: { message_id: 'om_1', chat_id: 'oc_p2p', chat_type: 'p2p', message_type: 'text', content: '{"text":"Comment vas tu?"}', create_time: String(Date.now()), ...(over.message ?? {}) },
+    sender: { sender_type: 'user', sender_id: { open_id: 'ou_mathieu' }, ...(over.sender ?? {}) },
+  })
+
+  deliver({})
+  await bot.chain(() => Promise.resolve())
+  assert.equal([...bot.chats.keys()].includes('oc_p2p'), true, 'a user message in an allowlisted chat reaches the agent')
+
+  // rejections, each recorded with its reason
+  deliver({ message: { message_id: 'om_2' }, sender: { sender_type: 'app' } })
+  deliver({ message: { message_id: 'om_3' }, sender: { sender_id: { open_id: 'ou_stranger' } } })
+  deliver({ message: { message_id: 'om_4', message_type: 'image', content: '{"image_key":"k"}' } })
+  deliver({ message: { message_id: 'om_1' } })   // duplicate
+  const log = readFileSync(join(dir, 'logs', 'feishu-inbound.log'), 'utf8')
+  assert.match(log, /RAW-BRIDGE delivering from=ou_mathieu in=oc_p2p/, 'a bridged message is recorded')
+  assert.match(log, /RAW-BRIDGE skip sender_type=app/, 'the bot never takes its own output')
+  assert.match(log, /RAW-BRIDGE skip not an operator/, 'the allowlist still applies')
+  assert.match(log, /RAW-BRIDGE skip unsupported type=image/, 'a non-text message is refused rather than guessed at')
+  assert.match(log, /RAW-BRIDGE skip duplicate/, 'the same message is not delivered twice')
+  rmSync(dir, { recursive: true, force: true })
+  ok('raw bridge: delivers user text past a broken pipeline, refusing everything else')
+}
+
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
