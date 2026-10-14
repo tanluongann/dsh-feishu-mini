@@ -476,4 +476,95 @@ function fakeCtx(agent) {
   ok('bot images: native attachment blocks, file mode, off, broken-download fallback, files, workspace fallback, batched-resource recovery')
 }
 
+// ---------------------------------------------------------- beat economics --
+// 2026-10-14: a long turn patched its progress card every 4 s and exhausted an app's
+// monthly API quota (4,589 x 99991403 in one morning). These checks pin the three
+// rules that bound the spend: a clock/preview window, immediate structural patches,
+// an escalating backoff, and a stop for a turn that makes no progress.
+function beatBot(configOverrides = {}) {
+  const config = Config({
+    appId: 'cli_beat0001app', appSecret: 's', cwd: '/tmp',
+    beatMs: 4_000, beatClockMs: 60_000, stallAfterMs: 30 * 60_000,
+    footer: 'model', cardVersion: 'v1', ...configOverrides,
+  })
+  const channel = fakeChannel()
+  const ctx = fakeCtx(fakeAgent())
+  const dir = mkdtempSync(join(tmpdir(), 'fm-beat-'))
+  const store = new StateStore(dir, 'app-beat')
+  store.load()
+  const warns = []
+  const bot = new HouseBot({
+    ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
+    logger: { info: () => {}, warn: (message) => warns.push(String(message)) },
+    info: { instance: 'app-beat', cwd: '/tmp' },
+  })
+  return { bot, channel, warns, dir }
+}
+
+{
+  const { bot, channel, warns, dir } = beatBot()
+  let t = 1_000_000
+  bot.now = () => t
+  const entry = bot.chat('oc_beat')
+  entry.turn = { ...initialTurn(), running: true, startedAt: t, phase: 'thinking' }
+  await bot.openCard(entry)
+  const baseline = channel.calls.updated.length
+
+  // A. 150 beats a second apart with nothing changing: the clock window decides.
+  for (let i = 0; i < 150; i += 1) { t += 1_000; await bot.beat() }
+  const idle = channel.calls.updated.length - baseline
+  assert.ok(idle <= 3, `clock-only beats must not each cost a call (saw ${idle} calls in 150 s)`)
+  assert.ok(idle >= 1, 'but the elapsed time still refreshes eventually')
+
+  // B. a real state change patches at the next beat, window or not.
+  entry.turn.step = 1
+  t += 1_000
+  await bot.beat()
+  assert.equal(channel.calls.updated.length - baseline, idle + 1, 'a step change patches immediately')
+
+  // C. a quota error is not retried every beat (the old code retried every 4 s).
+  let attempts = 0
+  channel.updateCard = async () => {
+    attempts += 1
+    throw new Error("Request failed with status code 429 { code: 99991403, msg: \"This month's API call quota has been exceeded\" }")
+  }
+  for (let i = 0; i < 300; i += 1) { t += 1_000; entry.turn.step += 1; await bot.beat() }
+  assert.equal(attempts, 1, `a quota error stops the loop (${attempts} attempt(s) over 300 s of beats)`)
+  assert.equal(warns.length, 1, 'and it is logged once, not once per beat')
+
+  rmSync(dir, { recursive: true, force: true })
+  ok('beat: clock window gates refreshes, steps patch instantly, quota error backs off')
+}
+
+{
+  // D. a turn that stops making progress stops costing calls entirely.
+  const { bot, channel, warns, dir } = beatBot({ stallAfterMs: 10 * 60_000 })
+  let t = 1_000_000
+  bot.now = () => t
+  const entry = bot.chat('oc_stall')
+  // 'thinking' renders elapsed time, so the card *does* drift here — the point of the
+  // check is that the window gates it and the stall stops it. (In phase 'tool' with no
+  // current tool the card is frozen, so it costs nothing at all.)
+  entry.turn = { ...initialTurn(), running: true, startedAt: t, phase: 'thinking' }
+  await bot.openCard(entry)
+  const baseline = channel.calls.updated.length
+  for (let i = 0; i < 11 * 60; i += 1) { t += 1_000; await bot.beat() }   // 11 minutes, frozen step
+  const during = channel.calls.updated.length - baseline
+  assert.ok(during > 0, 'the card refreshes while the turn is considered alive')
+  const mark = channel.calls.updated.length
+  for (let i = 0; i < 5 * 60; i += 1) { t += 1_000; await bot.beat() }    // five more minutes
+  assert.equal(channel.calls.updated.length - mark, 0, 'a stalled turn stops patching entirely')
+  assert.equal(warns.length, 1, 'the stall is announced once')
+  assert.match(warns[0], /no progress/, 'and the message says why')
+
+  // E. a stalled turn that moves again resumes patching.
+  entry.turn.step += 1
+  t += 1_000
+  await bot.beat()
+  assert.equal(channel.calls.updated.length - mark, 1, 'progress resumes the card')
+
+  rmSync(dir, { recursive: true, force: true })
+  ok('beat: a stalled turn stops spending calls, and resumes when it moves')
+}
+
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
