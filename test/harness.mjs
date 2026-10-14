@@ -943,4 +943,40 @@ async function turnWithoutCard(configOverrides) {
   ok('raw bridge: delivers user text past a broken pipeline, refusing everything else')
 }
 
+// ------------------------------------------- a display failure cannot eat the answer --
+// finalizeTurn used to `await updateCard(...)` unguarded BEFORE sending the answer, so a
+// refused card update aborted the turn's delivery and the reply was lost (2026-10-14: the
+// agent composed answers all afternoon and Mathieu saw nothing).
+{
+  const dir = mkdtempSync(join(tmpdir(), 'fm-cardfail-'))
+  const config = Config({ appId: 'cli_cardf01app', appSecret: 's', cwd: dir, footer: 'model', cardVersion: 'v1', answer: 'card' })
+  const channel = fakeChannel()
+  channel.updateCard = async () => { throw new Error('card update refused') }
+  const ctx = fakeCtx(fakeAgent())
+  const store = new StateStore(dir, 'app-cardfail')
+  store.load()
+  const bot = new HouseBot({
+    ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
+    logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-cardfail', cwd: dir },
+  })
+  await bot.start()
+  ctx.on('session/event', (session, event) => bot.onSessionEvent(session, event))
+  channel.handlers.message({ messageId: 'om_cf', chatId: 'oc_cf', content: 'tu es là ?', senderIsBot: false })
+  await bot.chain(() => Promise.resolve())
+  const sessionId = [...bot.chats.values()][0].sessionId
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'turn/start', data: { turn: 1 } })
+  await bot.chain(() => Promise.resolve())
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await bot.chain(() => Promise.resolve())
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Oui, je suis là.' }] }, usage: { inputTokens: 5, outputTokens: 5 } } })
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  await bot.chain(() => Promise.resolve())
+
+  assert.ok(channel.calls.sent.some((m) => JSON.stringify(m).includes('Oui, je suis là')), 'the answer is delivered as a message when the card cannot take it')
+  const log = readFileSync(join(dir, 'logs', 'feishu-inbound.log'), 'utf8')
+  assert.match(log, /(final card|answer card) failed: card update refused/, 'and the display failure is written down')
+  rmSync(dir, { recursive: true, force: true })
+  ok('delivery: a failed card update falls back to a message instead of losing the answer')
+}
+
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
