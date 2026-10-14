@@ -823,4 +823,56 @@ async function turnWithoutCard(configOverrides) {
   ok('observability: policy drops and channel errors land in logs/feishu-inbound.log')
 }
 
+// ------------------------------------------------ connecting past a refused identity --
+// The SDK's doConnect() starts with `botIdentity = await fetchBotIdentity()`, and Lark
+// refuses `bot/v3/info` with 99991403 for reasons a surface cannot control. With the
+// fallback on, the channel must still arm; with it off, the failure must surface.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'fm-ident-'))
+  const config = Config({ appId: 'cli_ident01app', appSecret: 's', cwd: dir, footer: 'model', cardVersion: 'v1' })
+  const ctx = fakeCtx(fakeAgent())
+  const store = new StateStore(dir, 'app-ident')
+  store.load()
+  const refusal = () => { const e = new Error('could not resolve bot identity via /open-apis/bot/v3/info — required for channel to function'); return e }
+
+  // (a) fallback OFF: the failure is surfaced, not swallowed
+  {
+    const channel = fakeChannel()
+    let attempts = 0
+    channel.connect = async () => { attempts += 1; throw refusal() }
+    const bot = new HouseBot({
+      ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
+      logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-ident', cwd: dir },
+    })
+    let threw = false
+    try { await bot.start() } catch { threw = true }
+    assert.equal(threw, true, 'the identity refusal is surfaced when the fallback is off')
+    assert.equal(attempts, 1, 'and no retry happens')
+  }
+
+  // (b) fallback ON: one retry, with the identity supplied, and it is written down
+  {
+    const channel = fakeChannel()
+    let attempts = 0
+    channel.connect = async () => {
+      attempts += 1
+      if (attempts === 1) throw refusal()
+      assert.equal(typeof channel.fetchBotIdentity, 'function', 'the identity is supplied before the retry')
+      assert.match((await channel.fetchBotIdentity()).openId, /^ou_0+$/, 'the placeholder cannot match a real sender')
+    }
+    const bot = new HouseBot({
+      ctx, config: { ...config, botIdentityFallback: true, footerFields: footerFields(config) }, channel, store,
+      logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-ident', cwd: dir },
+    })
+    await bot.start()
+    assert.equal(attempts, 2, 'exactly one retry')
+    const log = readFileSync(join(dir, 'logs', 'feishu-inbound.log'), 'utf8')
+    assert.match(log, /bot identity refused/, 'the refusal is recorded')
+    assert.match(log, /connected with a placeholder bot identity/, 'and so is the workaround')
+    assert.match(log, /armed as app-ident/, 'the surface reports that it armed')
+  }
+  rmSync(dir, { recursive: true, force: true })
+  ok('identity: a refused bot-info call is retried with a placeholder (1:1), and never hidden')
+}
+
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
