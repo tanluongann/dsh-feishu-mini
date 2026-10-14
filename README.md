@@ -93,7 +93,11 @@ profile patch that targets the row replaces that config wholesale.
 | `provider` / `model` | host default | route for sessions this surface creates |
 | `steerMidTurn` | `true` | a message sent mid-turn steers it |
 | `beatMs` | `4000` | live-card refresh beat |
-| `processLine` | `true` | the one-line card at all |
+| `progressCard` | `true` | the live card at all (see *No card mode* below) |
+| `processLine` | `true` | legacy alias — `false` also turns the card off |
+| `beatMinGapMs` | `60000` | floor between beat-driven card patches, per chat |
+| `stallAfterMs` | `1800000` | no new step/tool for this long → drop to `stalledBeatMs` |
+| `stalledBeatMs` | `600000` | beat gap while a turn looks stalled |
 | `processDetail` | `true` | the collapsed detail panel |
 | `processRows` | `4` | tool rows kept in the panel |
 | `stopButton` | `true` | the tiny ⏹ on the line |
@@ -108,6 +112,36 @@ profile patch that targets the row replaces that config wholesale.
 
 Commands in chat: `/status` (state + route + counters), `/new`, `/stop`, `/display` (the effective flags),
 anything else is dispatched to the agent.
+
+## No card mode (`progressCard: false`)
+
+Some surfaces should not draw a live card at all. The reason this exists is a quota, not
+taste: a Lark/Feishu app has a **monthly API call quota** and answers `99991403 — this month's
+API call quota has been exceeded` once it is gone. That cap gates specific endpoints, and the
+card is what spends them — `PATCH /im/v1/messages/:id` on every update (and the reaction
+endpoints too), while **message send keeps working**.
+
+On 2026-10-14 a 4 s patch loop exhausted one app's quota in a single morning: ~900 calls/hour
+for the length of a turn, 4,589 rejected calls, 1.5 MB of log. The beat is now bounded
+(`beatMinGapMs`, plus a fingerprint of the discrete state), but a surface on a tight quota can
+turn the card off entirely:
+
+```yaml
+- id: feishu-mini
+  config:
+    progressCard: false
+```
+
+With the card off:
+
+- no card is opened and no card is patched — a turn costs one message instead of dozens;
+- answers still arrive as ordinary markdown messages;
+- `answer: 'card'` degrades to `'message'` rather than delivering **nothing** (that trap is
+  real: `card` embeds the answer in a card that no longer exists);
+- reactions are unaffected — they are their own endpoints and their own cost.
+
+Measured on the app that motivated it: the failing calls stopped the moment the card went off,
+and the surface kept answering.
 
 ## Design notes (the parts that are easy to get wrong)
 

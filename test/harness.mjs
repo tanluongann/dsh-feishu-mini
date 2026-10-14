@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Config, footerFields, instanceOf, resolveCredentials } from '../lib/config.js'
+import { Config, answerMode, footerFields, instanceOf, progressCardEnabled, resolveCredentials } from '../lib/config.js'
 import { answerBody, DETAILS_ACTION, emptyAnswer, processCard, statusCard, STOP_ACTION } from '../lib/render.js'
 import { foldEvent, foldStream, formatDuration, initialTurn, statusLine } from '../lib/turn.js'
 import { HouseBot } from '../lib/bot.js'
@@ -663,6 +663,76 @@ function runningEntry(bot, chatId, at, phase = 'thinking') {
   assert.ok(channel.calls.updated.length - mark - after >= 1, 'progress restores the normal gap')
   rmSync(dir, { recursive: true, force: true })
   ok('beat: a stalled turn slows to one tick per stalledBeatMs, and resumes on progress')
+}
+
+// ------------------------------------------------------- no progress card --
+// `progressCard: false` is for surfaces whose app has run out of API quota (or that
+// simply do not want a live card): no card is opened, no card is patched — and a turn's
+// answer is still delivered. The trap it closes: `answer: 'card'` with no card used to
+// deliver nothing at all.
+{
+  assert.equal(progressCardEnabled(Config({ appId: 'a', appSecret: 'b' })), true, 'the card is on by default')
+  assert.equal(progressCardEnabled(Config({ appId: 'a', appSecret: 'b', progressCard: false })), false)
+  assert.equal(progressCardEnabled(Config({ appId: 'a', appSecret: 'b', processLine: false })), false, 'legacy alias')
+  assert.equal(answerMode(Config({ appId: 'a', appSecret: 'b', answer: 'card' })), 'card')
+  assert.equal(answerMode(Config({ appId: 'a', appSecret: 'b', answer: 'card', progressCard: false })), 'message', 'no card ⇒ a card answer degrades to a message')
+  assert.equal(answerMode(Config({ appId: 'a', appSecret: 'b', answer: 'both', progressCard: false })), 'message')
+  assert.equal(answerMode(Config({ appId: 'a', appSecret: 'b', answer: 'message' })), 'message')
+  ok('progressCard: one switch, legacy alias, and a card answer that cannot swallow the answer')
+}
+
+async function turnWithoutCard(configOverrides) {
+  const config = Config({
+    appId: 'cli_nocard01app', appSecret: 's', cwd: '/tmp', beatMs: 50, beatMinGapMs: 50,
+    footer: 'model', cardVersion: 'v1', ...configOverrides,
+  })
+  const channel = fakeChannel()
+  const agent = fakeAgent()
+  const ctx = fakeCtx(agent)
+  const dir = mkdtempSync(join(tmpdir(), 'fm-nocard-'))
+  const store = new StateStore(dir, 'app-nocard')
+  store.load()
+  const bot = new HouseBot({
+    ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
+    logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-nocard', cwd: '/tmp' },
+  })
+  await bot.start()
+  ctx.on('session/event', (session, event) => bot.onSessionEvent(session, event))
+  const settle = () => bot.chain(() => Promise.resolve())
+
+  channel.handlers.message({ messageId: 'om_u1', chatId: 'oc_quiet', content: 'status?', senderIsBot: false })
+  await settle()
+  const sessionId = [...bot.chats.values()][0].sessionId
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'turn/start', data: { turn: 1 } })
+  await settle()
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'tool/call', data: { name: 'bash' } })
+  await settle()
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'tool/result', data: {} })
+  await settle()
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'All good.' }] }, usage: { inputTokens: 10, outputTokens: 5 } } })
+  ctx.handlers['session/event']({ id: sessionId }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  await settle()
+  return { channel, dir }
+}
+
+{
+  const { channel, dir } = await turnWithoutCard({ progressCard: false, answer: 'card' })
+  const cards = channel.calls.sent.filter((call) => call.input.card !== undefined)
+  assert.equal(cards.length, 0, 'no card is opened')
+  assert.equal(channel.calls.updated.length, 0, 'and nothing is ever patched')
+  const answer = channel.calls.sent.at(-1)
+  assert.ok(answer.input.markdown !== undefined, 'the answer still arrives as a plain message')
+  assert.match(answer.input.markdown, /All good\./, 'with the model text intact')
+  rmSync(dir, { recursive: true, force: true })
+  ok('progressCard off: no card is opened or patched, and the answer is delivered')
+}
+
+{
+  // the same surface with the card ON still puts the answer in the card when asked
+  const { channel, dir } = await turnWithoutCard({ answer: 'card' })
+  assert.equal(channel.calls.updated.length >= 1, true, 'with the card on, a card answer patches the card')
+  rmSync(dir, { recursive: true, force: true })
+  ok('progressCard on: a card answer still goes to the card')
 }
 
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
