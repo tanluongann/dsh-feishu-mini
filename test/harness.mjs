@@ -497,7 +497,7 @@ function beatBot(configOverrides = {}) {
   const bot = new HouseBot({
     ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
     logger: { info: () => {}, warn: (message) => warns.push(String(message)) },
-    info: { instance: 'app-beat', cwd: '/tmp' },
+    info: { instance: 'app-beat', cwd: dir },
   })
   return { bot, channel, warns, dir }
 }
@@ -694,7 +694,7 @@ async function turnWithoutCard(configOverrides) {
   store.load()
   const bot = new HouseBot({
     ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
-    logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-nocard', cwd: '/tmp' },
+    logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-nocard', cwd: dir },
   })
   await bot.start()
   ctx.on('session/event', (session, event) => bot.onSessionEvent(session, event))
@@ -759,7 +759,7 @@ async function turnWithoutCard(configOverrides) {
     store.load()
     const bot = new HouseBot({
       ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
-      logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-hook', cwd: '/tmp' },
+      logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-hook', cwd: dir },
     })
     await bot.start()
     ctx.on('session/event', (session, event) => bot.onSessionEvent(session, event))
@@ -792,6 +792,35 @@ async function turnWithoutCard(configOverrides) {
   } finally {
     globalThis.fetch = originalFetch
   }
+}
+
+// ------------------------------------------------- observability of drops --
+// The SDK filters messages BEFORE the plugin sees them (mention required, allowlist,
+// bot loop) and reports each drop on `reject`. Without a subscription, "the app is
+// dropping his messages" and "the app receives nothing" look identical from outside —
+// which is exactly the ambiguity that cost 2026-10-14.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'fm-reject-'))
+  const config = Config({ appId: 'cli_rej0001app', appSecret: 's', cwd: dir, footer: 'model', cardVersion: 'v1' })
+  const channel = fakeChannel()
+  const ctx = fakeCtx(fakeAgent())
+  const store = new StateStore(dir, 'app-rej')
+  store.load()
+  const bot = new HouseBot({
+    ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
+    logger: ctx.logger, info: { instance: 'app-rej', cwd: dir },
+  })
+  await bot.start()
+  assert.equal(typeof channel.handlers.reject, 'function', 'the surface subscribes to reject')
+
+  channel.handlers.reject({ reason: 'no_mention', senderId: 'ou_sender', chatId: 'oc_chat', messageId: 'om_msg' })
+  channel.handlers.error({ message: 'bot/v3/info failed: 99991403' })
+  const log = readFileSync(join(dir, 'logs', 'feishu-inbound.log'), 'utf8')
+  assert.match(log, /armed as app-rej/, 'the arm line names the instance and card state')
+  assert.match(log, /REJECTED reason=no_mention from=ou_sender in=oc_chat/, 'a dropped message is written down with its reason')
+  assert.match(log, /channel error: bot\/v3\/info failed/, 'a channel error is written down too')
+  rmSync(dir, { recursive: true, force: true })
+  ok('observability: policy drops and channel errors land in logs/feishu-inbound.log')
 }
 
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
