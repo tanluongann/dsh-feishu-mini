@@ -813,14 +813,36 @@ async function turnWithoutCard(configOverrides) {
   await bot.start()
   assert.equal(typeof channel.handlers.reject, 'function', 'the surface subscribes to reject')
 
+  assert.equal(typeof channel.handlers.reject, 'function', 'reject handler registered')
   channel.handlers.reject({ reason: 'no_mention', senderId: 'ou_sender', chatId: 'oc_chat', messageId: 'om_msg' })
   channel.handlers.error({ message: 'bot/v3/info failed: 99991403' })
   const log = readFileSync(join(dir, 'logs', 'feishu-inbound.log'), 'utf8')
   assert.match(log, /armed as app-rej/, 'the arm line names the instance and card state')
   assert.match(log, /REJECTED reason=no_mention from=ou_sender in=oc_chat/, 'a dropped message is written down with its reason')
   assert.match(log, /channel error: bot\/v3\/info failed/, 'a channel error is written down too')
+  // the raw diagnostic path: what the SOCKET delivered, before any local filter
+  {
+    const dir2 = mkdtempSync(join(tmpdir(), 'fm-raw-'))
+    const config2 = Config({ appId: 'cli_raw0001app', appSecret: 's', cwd: dir2, footer: 'model', cardVersion: 'v1', logRawMessageEvents: true })
+    const channel2 = fakeChannel()
+    const rawHandlers = {}
+    channel2.onRawEvent = (type, handler) => { rawHandlers[type] = handler; return () => {} }
+    const store2 = new StateStore(dir2, 'app-raw')
+    store2.load()
+    const bot2 = new HouseBot({
+      ctx, config: { ...config2, footerFields: footerFields(config2) }, channel: channel2, store: store2,
+      logger: ctx.logger, info: { instance: 'app-raw', cwd: dir2 },
+    })
+    await bot2.start()
+    assert.equal(typeof rawHandlers['im.message.receive_v1'], 'function', 'the raw diagnostic subscribes to the message event')
+    rawHandlers['im.message.receive_v1']({ message: { chat_id: 'oc_raw', message_type: 'text', content: '{"text":"coucou"}' }, sender: { sender_id: { open_id: 'ou_who' } } })
+    const rawLog = readFileSync(join(dir2, 'logs', 'feishu-inbound.log'), 'utf8')
+    assert.match(rawLog, /RAW im\.message\.receive_v1 chat=oc_raw from=ou_who/, 'a raw delivery is recorded with its ids')
+    assert.match(rawLog, /raw message-event logging enabled/, 'and the diagnostic announces itself')
+    rmSync(dir2, { recursive: true, force: true })
+  }
   rmSync(dir, { recursive: true, force: true })
-  ok('observability: policy drops and channel errors land in logs/feishu-inbound.log')
+  ok('observability: policy drops, channel errors and raw socket deliveries all land in the log')
 }
 
 // ------------------------------------------------ connecting past a refused identity --
