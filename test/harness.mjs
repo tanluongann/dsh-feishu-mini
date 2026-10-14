@@ -478,13 +478,14 @@ function fakeCtx(agent) {
 
 // ---------------------------------------------------------- beat economics --
 // 2026-10-14: a long turn patched its progress card every 4 s and exhausted an app's
-// monthly API quota (4,589 x 99991403 in one morning). These checks pin the three
-// rules that bound the spend: a clock/preview window, immediate structural patches,
-// an escalating backoff, and a stop for a turn that makes no progress.
+// monthly API quota (4,589 x 99991403 in one morning). These checks pin the bounds:
+// a hard per-chat floor, fingerprints that cannot drift with the stream, a backoff
+// that actually escalates, no state leaking across a failed turn start, and a stall
+// that slows the card instead of freezing it.
 function beatBot(configOverrides = {}) {
   const config = Config({
     appId: 'cli_beat0001app', appSecret: 's', cwd: '/tmp',
-    beatMs: 4_000, beatClockMs: 60_000, stallAfterMs: 30 * 60_000,
+    beatMs: 4_000, beatMinGapMs: 60_000, stallAfterMs: 30 * 60_000, stalledBeatMs: 10 * 60_000,
     footer: 'model', cardVersion: 'v1', ...configOverrides,
   })
   const channel = fakeChannel()
@@ -501,70 +502,167 @@ function beatBot(configOverrides = {}) {
   return { bot, channel, warns, dir }
 }
 
+function runningEntry(bot, chatId, at, phase = 'thinking') {
+  const entry = bot.chat(chatId)
+  entry.turn = { ...initialTurn(), running: true, startedAt: at, phase }
+  return entry
+}
+
 {
-  const { bot, channel, warns, dir } = beatBot()
+  // A. the floor bounds the beat, whatever the state does.
+  const { bot, channel, dir } = beatBot()
   let t = 1_000_000
   bot.now = () => t
-  const entry = bot.chat('oc_beat')
-  entry.turn = { ...initialTurn(), running: true, startedAt: t, phase: 'thinking' }
+  const entry = runningEntry(bot, 'oc_floor', t)
   await bot.openCard(entry)
   const baseline = channel.calls.updated.length
-
-  // A. 150 beats a second apart with nothing changing: the clock window decides.
   for (let i = 0; i < 150; i += 1) { t += 1_000; await bot.beat() }
   const idle = channel.calls.updated.length - baseline
-  assert.ok(idle <= 3, `clock-only beats must not each cost a call (saw ${idle} calls in 150 s)`)
+  assert.ok(idle <= 3, `the 60 s floor must bound 150 beats (saw ${idle} calls)`)
   assert.ok(idle >= 1, 'but the elapsed time still refreshes eventually')
 
-  // B. a real state change patches at the next beat, window or not.
+  // B. a fingerprint change waits for the floor — and still arrives.
   entry.turn.step = 1
   t += 1_000
   await bot.beat()
-  assert.equal(channel.calls.updated.length - baseline, idle + 1, 'a step change patches immediately')
+  assert.equal(channel.calls.updated.length - baseline, idle, 'a change cannot beat the floor')
+  let waited = 0
+  while (channel.calls.updated.length - baseline === idle && waited < 120) {
+    t += 1_000
+    await bot.beat()
+    waited += 1
+  }
+  assert.equal(channel.calls.updated.length - baseline, idle + 1, 'the change rides the next floor tick')
+  assert.ok(waited <= 60, `within one floor period (waited ${waited}s)`)
 
-  // C. a quota error is not retried every beat (the old code retried every 4 s).
+  rmSync(dir, { recursive: true, force: true })
+  ok('beat: a hard floor bounds the beat, and changes ride the next tick')
+}
+
+{
+  // C. stream deltas must not defeat the floor: the fingerprint is discrete, and the
+  // call count is a function of time, not of beat frequency (the D1 regression test).
+  async function callsWithDeltas(beatMs, alternating) {
+    const { bot, channel, dir } = beatBot({ beatMs })
+    let t = 2_000_000
+    bot.now = () => t
+    const entry = runningEntry(bot, 'oc_drift', t)
+    await bot.openCard(entry)
+    const baseline = channel.calls.updated.length
+    let text = 0
+    for (let elapsed = 0; elapsed < 600_000; elapsed += 250) {
+      if (alternating || text % 2 === 0) {
+        const kind = alternating && text % 2 === 1 ? 'text-delta' : 'reasoning-delta'
+        foldStream(entry.turn, { type: 'chunk', chunk: { type: kind, text: 'x' } }, t)
+      }
+      text += 1
+      if (elapsed % beatMs === 0) { await bot.beat() }   // beats at the configured rate
+      t += 250
+    }
+    const calls = channel.calls.updated.length - baseline
+    rmSync(dir, { recursive: true, force: true })
+    return calls
+  }
+  const slow = await callsWithDeltas(4_000, false)
+  const fast = await callsWithDeltas(1_000, false)
+  const alternating = await callsWithDeltas(4_000, true)
+  assert.ok(slow <= 12, `10 min of text deltas must cost <= 12 calls (saw ${slow})`)
+  assert.equal(slow, fast, 'the beat rate must not change the call count')
+  assert.equal(alternating, slow, 'interleaved reasoning/text deltas must not add calls')
+  ok('beat: stream volume and beat frequency do not change the call count')
+}
+
+{
+  // D. a failing channel escalates the backoff and is logged once per burst.
+  const { bot, channel, warns, dir } = beatBot()
+  let t = 3_000_000
+  bot.now = () => t
+  const entry = runningEntry(bot, 'oc_fail', t)
+  await bot.openCard(entry)
+  channel.updateCard = async () => { throw new Error('Request failed with status code 500') }
+  let attempts = 0
+  const send = channel.updateCard
+  channel.updateCard = async (...args) => { attempts += 1; return send(...args) }
+  for (let i = 0; i < 600; i += 1) { t += 1_000; entry.turn.step += 1; await bot.beat() }
+  assert.ok(attempts >= 2, `a persistent failure must be retried (saw ${attempts})`)
+  assert.ok(attempts <= 12, `but with escalating backoff, not every beat (saw ${attempts} in 10 min)`)
+  assert.ok(entry.beatFailures >= 2, 'the failure counter escalates')
+  assert.ok(warns.length <= attempts, 'logging is throttled to the bursts')
+  assert.ok(warns.length >= 1, 'and the first failure is reported')
+  rmSync(dir, { recursive: true, force: true })
+  ok('beat: a failing channel escalates backoff instead of hammering')
+}
+
+{
+  // E. the quota case stops the loop outright.
+  const { bot, channel, warns, dir } = beatBot()
+  let t = 4_000_000
+  bot.now = () => t
+  const entry = runningEntry(bot, 'oc_quota', t)
+  await bot.openCard(entry)
   let attempts = 0
   channel.updateCard = async () => {
     attempts += 1
     throw new Error("Request failed with status code 429 { code: 99991403, msg: \"This month's API call quota has been exceeded\" }")
   }
   for (let i = 0; i < 300; i += 1) { t += 1_000; entry.turn.step += 1; await bot.beat() }
-  assert.equal(attempts, 1, `a quota error stops the loop (${attempts} attempt(s) over 300 s of beats)`)
-  assert.equal(warns.length, 1, 'and it is logged once, not once per beat')
-
+  assert.equal(attempts, 1, `a quota error stops the loop (${attempts} attempt(s) over 300 s)`)
+  assert.equal(warns.length, 1, 'and it is logged once')
   rmSync(dir, { recursive: true, force: true })
-  ok('beat: clock window gates refreshes, steps patch instantly, quota error backs off')
+  ok('beat: a quota error stops the loop and says so once')
 }
 
 {
-  // D. a turn that stops making progress stops costing calls entirely.
-  const { bot, channel, warns, dir } = beatBot({ stallAfterMs: 10 * 60_000 })
-  let t = 1_000_000
+  // F. a failed turn-start send must not leak the previous turn's accounting.
+  const { bot, channel, warns, dir } = beatBot({ stallAfterMs: 60_000 })
+  let t = 5_000_000
   bot.now = () => t
-  const entry = bot.chat('oc_stall')
-  // 'thinking' renders elapsed time, so the card *does* drift here — the point of the
-  // check is that the window gates it and the stall stops it. (In phase 'tool' with no
-  // current tool the card is frozen, so it costs nothing at all.)
-  entry.turn = { ...initialTurn(), running: true, startedAt: t, phase: 'thinking' }
+  const first = runningEntry(bot, 'oc_leak', t)
+  await bot.openCard(first)
+  t += 10_000
+  first.turn.running = false
+  await bot.finalizeTurn(first)
+
+  t += 20 * 60_000                                     // the gap that used to look "stalled"
+  const second = first
+  second.turn = { ...initialTurn(), running: true, startedAt: t, phase: 'thinking' }
+  channel.send = async () => { throw new Error('send failed') }
+  await bot.openCard(second).catch(() => {})
+  assert.equal(second.cardId, undefined, 'a failed send leaves no card to patch')
+  assert.equal(second.stallNotified, false, 'and no stall state from the previous turn')
+  assert.equal(second.beatFailures, 0, 'and no inherited backoff')
+  const warnsBefore = warns.length
+  for (let i = 0; i < 30; i += 1) { t += 1_000; await bot.beat() }
+  assert.equal(warns.filter((w) => /no step or tool activity/.test(w)).length, 0, 'the new turn is not called stalled')
+  assert.equal(warns.length, warnsBefore, 'and nothing is logged for a turn with no card')
+  rmSync(dir, { recursive: true, force: true })
+  ok('beat: a failed turn start leaks no card id, stall clock or backoff')
+}
+
+{
+  // G. a stalled turn slows the card rather than freezing it.
+  const { bot, channel, warns, dir } = beatBot({ stallAfterMs: 10 * 60_000, stalledBeatMs: 5 * 60_000 })
+  let t = 6_000_000
+  bot.now = () => t
+  const entry = runningEntry(bot, 'oc_stall', t)
   await bot.openCard(entry)
   const baseline = channel.calls.updated.length
-  for (let i = 0; i < 11 * 60; i += 1) { t += 1_000; await bot.beat() }   // 11 minutes, frozen step
+  for (let i = 0; i < 11 * 60; i += 1) { t += 1_000; await bot.beat() }   // 11 min, frozen step
   const during = channel.calls.updated.length - baseline
   assert.ok(during > 0, 'the card refreshes while the turn is considered alive')
+  assert.equal(warns.filter((w) => /slowing card updates/.test(w)).length, 1, 'the slowdown is announced once')
   const mark = channel.calls.updated.length
-  for (let i = 0; i < 5 * 60; i += 1) { t += 1_000; await bot.beat() }    // five more minutes
-  assert.equal(channel.calls.updated.length - mark, 0, 'a stalled turn stops patching entirely')
-  assert.equal(warns.length, 1, 'the stall is announced once')
-  assert.match(warns[0], /no progress/, 'and the message says why')
+  for (let i = 0; i < 10 * 60; i += 1) { t += 1_000; await bot.beat() }    // ten more minutes
+  const after = channel.calls.updated.length - mark
+  assert.ok(after >= 1, `a stalled turn still ticks, slowly (saw ${after} calls in 10 min)`)
+  assert.ok(after <= 3, `but only slowly (saw ${after} calls in 10 min)`)
 
-  // E. a stalled turn that moves again resumes patching.
+  // H. activity resumes the normal cadence.
   entry.turn.step += 1
-  t += 1_000
-  await bot.beat()
-  assert.equal(channel.calls.updated.length - mark, 1, 'progress resumes the card')
-
+  for (let i = 0; i < 61; i += 1) { t += 1_000; await bot.beat() }
+  assert.ok(channel.calls.updated.length - mark - after >= 1, 'progress restores the normal gap')
   rmSync(dir, { recursive: true, force: true })
-  ok('beat: a stalled turn stops spending calls, and resumes when it moves')
+  ok('beat: a stalled turn slows to one tick per stalledBeatMs, and resumes on progress')
 }
 
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)

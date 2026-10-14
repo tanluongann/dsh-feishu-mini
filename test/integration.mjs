@@ -71,6 +71,10 @@ const workdir = mkdtempSync(join(tmpdir(), 'fm-integration-'))
   const fork = ctx.plugin(wrapperFor(channel), {
     appId: 'cli_integration', appSecret: 'secret', cwd: workdir,
     footer: 'model,timings', beatMs: 50, provider: 'deepseek-official', model: 'deepseek-flash',
+    // The beat is bounded by a floor (2026-10-14 quota incident). This test observes the
+    // beat refresh a live card, so the floor is set to the same order as its beatMs;
+    // in the fleet it is 60 s and event-driven patches carry the transitions.
+    beatMinGapMs: 50,
   })
   await fork
   assert.equal(fork.state, 2, 'fiber must reach ACTIVE (2)')
