@@ -735,4 +735,63 @@ async function turnWithoutCard(configOverrides) {
   ok('progressCard on: a card answer still goes to the card')
 }
 
+// --------------------------------------------------- answers via webhook --
+// With `webhookUrl` set, answers go out through a custom bot's webhook instead of the
+// app's message API — the escape hatch for an app whose monthly call quota (99991403)
+// is spent while inbound events still arrive over the WebSocket.
+{
+  const posted = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    posted.push({ url, body: JSON.parse(init.body) })
+    return { ok: true, status: 200, json: async () => ({ code: 0, msg: 'success' }) }
+  }
+  try {
+    const config = Config({
+      appId: 'cli_hook0001app', appSecret: 's', cwd: '/tmp', footer: 'model',
+      cardVersion: 'v1', progressCard: false,
+      webhookUrl: 'https://open.larksuite.com/open-apis/bot/v2/hook/abc-123',
+    })
+    const channel = fakeChannel()
+    const ctx = fakeCtx(fakeAgent())
+    const dir = mkdtempSync(join(tmpdir(), 'fm-hook-'))
+    const store = new StateStore(dir, 'app-hook')
+    store.load()
+    const bot = new HouseBot({
+      ctx, config: { ...config, footerFields: footerFields(config) }, channel, store,
+      logger: { info: () => {}, warn: () => {} }, info: { instance: 'app-hook', cwd: '/tmp' },
+    })
+    await bot.start()
+    ctx.on('session/event', (session, event) => bot.onSessionEvent(session, event))
+    const settle = () => bot.chain(() => Promise.resolve())
+
+    channel.handlers.message({ messageId: 'om_h1', chatId: 'oc_hook', content: 'tu es là ?', senderIsBot: false })
+    await settle()
+    const sessionId = [...bot.chats.values()][0].sessionId
+    ctx.handlers['session/event']({ id: sessionId }, { type: 'turn/start', data: { turn: 1 } })
+    await settle()
+    ctx.handlers['session/event']({ id: sessionId }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Oui, je suis là.' }] }, usage: { inputTokens: 5, outputTokens: 5 } } })
+    ctx.handlers['session/event']({ id: sessionId }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await settle()
+
+    assert.equal(posted.length, 1, 'the answer went out over the webhook')
+    assert.match(posted[0].url, /bot\/v2\/hook/, 'to the configured webhook')
+    assert.equal(posted[0].body.msg_type, 'text')
+    assert.match(posted[0].body.content.text, /Oui, je suis là\./, 'with the answer text')
+    assert.equal(channel.calls.sent.length, 0, 'and nothing was sent through the app API')
+
+    // a failed webhook must raise, not silently drop the answer
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ code: 19001, msg: 'param invalid' }) })
+    let threw = false
+    try {
+      await bot.sendViaWebhook('https://open.larksuite.com/open-apis/bot/v2/hook/abc-123', 'hello')
+    } catch { threw = true }
+    assert.equal(threw, true, 'a non-zero webhook code is an error')
+    rmSync(dir, { recursive: true, force: true })
+    ok('webhook: answers delivered through a custom bot, failures surfaced')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
