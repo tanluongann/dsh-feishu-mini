@@ -3,7 +3,7 @@
  * `node test/harness.mjs` — no network, no Feishu app, no DSH session.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Config, answerMode, footerFields, instanceOf, progressCardEnabled, resolveCredentials } from '../lib/config.js'
@@ -12,6 +12,7 @@ import { foldEvent, foldStream, formatDuration, initialTurn, statusLine } from '
 import { HouseBot } from '../lib/bot.js'
 import { channelOptions } from '../lib/lark.js'
 import { StateStore } from '../lib/state.js'
+import { OutboundPipe } from '../lib/outbound.js'
 
 let checks = 0
 const ok = (label) => { checks += 1; console.log(`  ✓ ${label}`) }
@@ -977,6 +978,61 @@ async function turnWithoutCard(configOverrides) {
   assert.match(log, /(final card|answer card) failed: card update refused/, 'and the display failure is written down')
   rmSync(dir, { recursive: true, force: true })
   ok('delivery: a failed card update falls back to a message instead of losing the answer')
+}
+
+// --------------------------------------------------------------- outbound --
+{
+  const dir = mkdtempSync(join(tmpdir(), 'fh-outbound-'))
+  const quiet = { info() {}, warn() {} }
+  const drop = (pipe, obj) => {
+    const name = `${Date.now()}-${Math.random().toString(16).slice(2, 6)}.json`
+    writeFileSync(join(pipe.dir, name), JSON.stringify(obj))
+    return name
+  }
+
+  const sent = []
+  const channel = { sendMarkdown: async (chat, md) => { sent.push([chat, md]) } }
+  const config = Config({ appId: 'a', appSecret: 's', outboundPrimaryChat: 'oc_primary', politenessNoteRatePerHour: 1, politenessDedupWindowMinutes: 30 })
+  let clock = Date.UTC(2026, 9, 18, 4)
+  const pipe = new OutboundPipe({ ctx: {}, config, channel, logger: quiet, cwd: dir, now: () => clock })
+  pipe.setup()
+
+  drop(pipe, { to: 'primary', class: 'alert', text: 'A1' })
+  await pipe.tick()
+  assert.deepEqual(sent.at(-1), ['oc_primary', 'A1'], 'alert delivers immediately to the primary chat')
+
+  drop(pipe, { to: 'primary', class: 'note', text: 'N1' })
+  await pipe.tick()
+  const n2 = drop(pipe, { to: 'primary', class: 'note', text: 'N2' })
+  await pipe.tick()
+  assert.ok(!sent.some(([, m]) => m === 'N2'), 'note over budget is held')
+  assert.ok(pipe.jsonFiles('held').includes(n2), 'held file present with reason sidecar')
+
+  clock += 3600_000
+  await pipe.tick()
+  assert.ok(sent.some(([, m]) => m === 'N2'), 'held note released when the budget window resets')
+
+  drop(pipe, { to: 'primary', class: 'alert', text: 'D' })
+  await pipe.tick()
+  drop(pipe, { to: 'primary', class: 'alert', text: 'D' })
+  await pipe.tick()
+  assert.equal(sent.filter(([, m]) => m === 'D').length, 1, 'identical outbound within the dedup window collapses')
+
+  const flaky = new OutboundPipe({ ctx: {}, config, channel: { sendMarkdown: async () => { throw new Error('boom') } }, logger: quiet, cwd: dir, now: () => clock })
+  flaky.setup()
+  const f = drop(flaky, { to: 'primary', class: 'alert', text: 'F' })
+  await flaky.tick()
+  assert.ok(pipe.jsonFiles('').includes(f), 'a failed delivery stays in the inbox, retried and visible')
+
+  const chatty = Config({ appId: 'a', appSecret: 's', outboundPrimaryChat: 'oc_p', politenessQuietHours: '00:00-23:59' })
+  const pipe2 = new OutboundPipe({ ctx: {}, config: chatty, channel, logger: quiet, cwd: dir, now: () => clock })
+  pipe2.setup()
+  const c = drop(pipe2, { to: 'primary', class: 'chatter', text: 'C1' })
+  await pipe2.tick()
+  assert.ok(pipe2.jsonFiles('held').includes(c), 'chatter is held during quiet hours')
+
+  rmSync(dir, { recursive: true, force: true })
+  ok('outbound: alert/note-budget/hold-release/dedup/failure-persistence/quiet-hours')
 }
 
 console.log(`\nALL CHECKS PASSED (${checks} groups)`)
